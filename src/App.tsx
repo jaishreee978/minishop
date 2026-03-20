@@ -101,10 +101,14 @@ export default function App() {
   const [profileName, setProfileName] = useState('');
   const [profileAddress, setProfileAddress] = useState('');
   const [profileGender, setProfileGender] = useState('Not Specified');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     if (user) {
       setProfileName(user.displayName || '');
+      setLoginError(null);
     }
   }, [user]);
   const [shippingDetails, setShippingDetails] = useState({
@@ -195,11 +199,35 @@ export default function App() {
   const fetchProducts = async () => {
     try {
       setIsLoading(true);
+      setFetchError(null);
       const response = await fetch('/api/products');
+      if (!response.ok) throw new Error('Failed to fetch products from server');
       const data = await response.json();
-      setProducts(data);
-    } catch (error) {
+      if (Array.isArray(data)) {
+        setProducts(data);
+      } else {
+        throw new Error('Invalid data format received from server');
+      }
+    } catch (error: any) {
       console.error('Error fetching products:', error);
+      setFetchError(error.message || 'An unexpected error occurred while loading products');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const resetProducts = async () => {
+    if (!confirm('Are you sure you want to reset all products to defaults? This will remove any custom products you added.')) return;
+    
+    try {
+      setIsLoading(true);
+      const response = await fetch('/api/products/reset', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to reset products');
+      const data = await response.json();
+      setProducts(data.products);
+      alert('Products have been reset to defaults.');
+    } catch (error: any) {
+      alert(`Error: ${error.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -207,7 +235,13 @@ export default function App() {
 
   const handleAddProduct = async (e: FormEvent) => {
     e.preventDefault();
+    if (!newProductName || !newProductPrice) {
+      alert('Please provide both name and price');
+      return;
+    }
+
     try {
+      setIsLoading(true);
       const response = await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -218,6 +252,7 @@ export default function App() {
           image: newProductImage
         })
       });
+      
       if (response.ok) {
         await fetchProducts();
         setIsAddProductModalOpen(false);
@@ -225,9 +260,16 @@ export default function App() {
         setNewProductPrice('');
         setNewProductImage('');
         setNewProductCategory('Electronics');
+        alert('Product added successfully!');
+      } else {
+        const errorData = await response.json();
+        alert(`Error: ${errorData.error || 'Failed to add product'}`);
       }
     } catch (error) {
       console.error('Error adding product:', error);
+      alert('Network error while adding product. Please check your connection.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -368,10 +410,23 @@ export default function App() {
   };
 
   const handleLogin = async () => {
+    setIsLoggingIn(true);
+    setLoginError(null);
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Login failed:", err);
+      if (err.code === 'auth/popup-blocked') {
+        setLoginError("The login popup was blocked by your browser. Please allow popups for this site and try again.");
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setLoginError("Login window was closed before completion. Please try again.");
+      } else if (err.code === 'auth/network-request-failed') {
+        setLoginError("Network error. Please check your internet connection.");
+      } else {
+        setLoginError("Login failed. Please try again or continue as guest.");
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -480,12 +535,32 @@ export default function App() {
           </div>
           
           <div className="space-y-4">
+            {loginError && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-rose-600 text-sm flex items-start gap-3"
+              >
+                <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+                <p>{loginError}</p>
+              </motion.div>
+            )}
+
             <button 
               onClick={handleLogin}
-              className="w-full flex items-center justify-center gap-3 bg-white border border-slate-200 text-slate-700 py-4 rounded-2xl font-bold shadow-sm hover:bg-slate-50 active:scale-95 transition-all"
+              disabled={isLoggingIn}
+              className={`w-full flex items-center justify-center gap-3 bg-white border border-slate-200 text-slate-700 py-4 rounded-2xl font-bold shadow-sm hover:bg-slate-50 active:scale-95 transition-all ${isLoggingIn ? 'opacity-70 cursor-not-allowed' : ''}`}
             >
-              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-6 h-6" />
-              Sign in with Google
+              {isLoggingIn ? (
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                  className="w-5 h-5 border-2 border-slate-300 border-t-slate-600 rounded-full"
+                />
+              ) : (
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-6 h-6" />
+              )}
+              {isLoggingIn ? 'Connecting...' : 'Continue with Google'}
             </button>
             
             <div className="relative py-2">
@@ -503,6 +578,12 @@ export default function App() {
             >
               Continue as Guest
             </button>
+          </div>
+          
+          <div className="pt-4 border-t border-slate-100">
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              <span className="font-bold text-slate-500">Mobile Tip:</span> If login fails, ensure you are using a standard browser (like Chrome or Safari) and that popups are not blocked.
+            </p>
           </div>
           
           <p className="text-xs text-slate-400">By signing in, you agree to our Terms & Conditions</p>
@@ -753,15 +834,32 @@ export default function App() {
               {!isLoading && filteredProducts.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-20 space-y-4">
                   <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center text-white/50">
-                    <Search size={40} />
+                    {fetchError ? <AlertTriangle size={40} className="text-rose-400" /> : <Search size={40} />}
                   </div>
-                  <p className="text-white/70 font-medium">No products found matching "{searchQuery}"</p>
-                  <button 
-                    onClick={() => setSearchQuery('')}
-                    className="text-white font-semibold hover:underline"
-                  >
-                    Clear Search
-                  </button>
+                  <div className="text-center max-w-xs">
+                    <p className="text-white font-bold text-lg">
+                      {fetchError ? 'Connection Error' : 'No Products Found'}
+                    </p>
+                    <p className="text-white/70 text-sm mt-1">
+                      {fetchError || (searchQuery ? `No matches for "${searchQuery}"` : "There are no products in the store yet.")}
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    {searchQuery && (
+                      <button 
+                        onClick={() => setSearchQuery('')}
+                        className="bg-white/20 text-white px-6 py-2 rounded-xl font-bold hover:bg-white/30 transition-all"
+                      >
+                        Clear Search
+                      </button>
+                    )}
+                    <button 
+                      onClick={fetchProducts}
+                      className="bg-accent-blue text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-600 transition-all"
+                    >
+                      Try Again
+                    </button>
+                  </div>
                 </div>
               )}
             </motion.div>
@@ -1068,9 +1166,19 @@ export default function App() {
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-display font-bold text-white drop-shadow-sm">Seller Dashboard</h2>
-                <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl text-white border border-white/20">
-                  <TrendingUp size={18} className="text-emerald-400" />
-                  <span className="text-sm font-bold">Live Stats</span>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={resetProducts}
+                    className="flex items-center gap-2 bg-rose-500/20 backdrop-blur-md px-4 py-2 rounded-xl text-rose-100 border border-rose-500/30 hover:bg-rose-500/30 transition-all"
+                    title="Reset to default products"
+                  >
+                    <Trash2 size={18} />
+                    <span className="text-sm font-bold">Reset Store</span>
+                  </button>
+                  <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl text-white border border-white/20">
+                    <TrendingUp size={18} className="text-emerald-400" />
+                    <span className="text-sm font-bold">Live Stats</span>
+                  </div>
                 </div>
               </div>
 
