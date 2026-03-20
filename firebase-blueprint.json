@@ -1,0 +1,23 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A product in the store",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "image": { "type": "string" }
+      },
+      "required": ["id", "name", "price", "category", "image"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Collection of products"
+    }
+  }
+}

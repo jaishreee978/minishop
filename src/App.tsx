@@ -34,7 +34,19 @@ import {
   DollarSign,
   BarChart3
 } from 'lucide-react';
-import { auth, googleProvider } from './firebase';
+import { 
+  collection, 
+  getDocs, 
+  setDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  writeBatch,
+  deleteDoc
+} from 'firebase/firestore';
+import { db, auth, googleProvider } from './firebase';
 import { signInWithPopup, signOut } from 'firebase/auth';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { 
@@ -82,7 +94,58 @@ interface CartItem extends Product {
 
 type Tab = 'home' | 'cart' | 'orders' | 'offers' | 'wishlist' | 'dashboard' | 'profile';
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
 export default function App() {
+  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+    const errInfo: FirestoreErrorInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+        isAnonymous: auth.currentUser?.isAnonymous,
+        tenantId: auth.currentUser?.tenantId,
+        providerInfo: auth.currentUser?.providerData.map(provider => ({
+          providerId: provider.providerId,
+          displayName: provider.displayName,
+          email: provider.email,
+          photoUrl: provider.photoURL
+        })) || []
+      },
+      operationType,
+      path
+    }
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+  }
+
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>('home');
@@ -104,8 +167,14 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
+
+  const [showTroubleshoot, setShowTroubleshoot] = useState(false);
 
   useEffect(() => {
+    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
     if (user) {
       setProfileName(user.displayName || '');
       setLoginError(null);
@@ -192,41 +261,160 @@ export default function App() {
   const [newProductImage, setNewProductImage] = useState('');
   const [newProductCategory, setNewProductCategory] = useState('Electronics');
 
-  useEffect(() => {
-    fetchProducts();
-  }, []);
+  // Default products for initial seeding
+  const DEFAULT_PRODUCTS = [
+    {
+      id: 1,
+      name: "Premium Wireless Headphones",
+      price: 299.99,
+      category: "Accessories",
+      image: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=80"
+    },
+    {
+      id: 2,
+      name: "Minimalist Smart Watch",
+      price: 199.5,
+      category: "Accessories",
+      image: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&q=80"
+    },
+    {
+      id: 3,
+      name: "Mechanical Gaming Keyboard",
+      price: 129,
+      category: "Gaming",
+      image: "https://images.unsplash.com/photo-1511467687858-23d96c32e4ae?w=800&q=80"
+    },
+    {
+      id: 4,
+      name: "Ultra-wide Curved Monitor",
+      price: 499.99,
+      category: "Electronics",
+      image: "https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=800&q=80"
+    },
+    {
+      id: 5,
+      name: "Pro DSLR Camera",
+      price: 1299.99,
+      category: "Electronics",
+      image: "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=800&q=80"
+    },
+    {
+      id: 6,
+      name: "Ergonomic Office Chair",
+      price: 349.00,
+      category: "Furniture",
+      image: "https://images.unsplash.com/photo-1505797149-43b0069ec26b?w=800&q=80"
+    },
+    {
+      id: 7,
+      name: "Smart Home Hub",
+      price: 89.99,
+      category: "Electronics",
+      image: "https://images.unsplash.com/photo-1558002038-1055907df827?w=800&q=80"
+    },
+    {
+      id: 8,
+      name: "Leather Travel Bag",
+      price: 159.50,
+      category: "Accessories",
+      image: "https://images.unsplash.com/photo-1547949003-9792a18a2601?w=800&q=80"
+    },
+    {
+      id: 9,
+      name: "Wireless Charging Pad",
+      price: 39.99,
+      category: "Accessories",
+      image: "https://images.unsplash.com/photo-1586816832753-101af6fe2f84?w=800&q=80"
+    },
+    {
+      id: 10,
+      name: "Noise Cancelling Earbuds",
+      price: 149.99,
+      category: "Accessories",
+      image: "https://images.unsplash.com/photo-1590658268037-6bf12165a8df?w=800&q=80"
+    }
+  ];
+
+  const seedDefaultProducts = async () => {
+    try {
+      const batch = writeBatch(db);
+      DEFAULT_PRODUCTS.forEach(product => {
+        const productRef = doc(collection(db, 'products'), product.id.toString());
+        batch.set(productRef, product);
+      });
+      await batch.commit();
+      setProducts(DEFAULT_PRODUCTS as Product[]);
+    } catch (error) {
+      console.error('Error seeding products:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'products');
+    }
+  };
 
   const fetchProducts = async () => {
     try {
       setIsLoading(true);
       setFetchError(null);
-      const response = await fetch('/api/products');
-      if (!response.ok) throw new Error('Failed to fetch products from server');
-      const data = await response.json();
-      if (Array.isArray(data)) {
-        setProducts(data);
+      const q = query(collection(db, 'products'), orderBy('id', 'desc'));
+      const snapshot = await getDocs(q);
+      const productsList = snapshot.docs.map(doc => ({
+        ...doc.data()
+      })) as Product[];
+      
+      if (productsList.length === 0) {
+        await seedDefaultProducts();
       } else {
-        throw new Error('Invalid data format received from server');
+        setProducts(productsList);
       }
     } catch (error: any) {
       console.error('Error fetching products:', error);
-      setFetchError(error.message || 'An unexpected error occurred while loading products');
+      setFetchError('Failed to load products. Please check your internet connection.');
+      handleFirestoreError(error, OperationType.GET, 'products');
     } finally {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const q = query(collection(db, 'products'), orderBy('id', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const productsList = snapshot.docs.map(doc => ({
+        ...doc.data()
+      })) as Product[];
+      
+      if (productsList.length > 0) {
+        setProducts(productsList);
+        setIsLoading(false);
+      } else {
+        fetchProducts();
+      }
+    }, (error) => {
+      console.error("Firestore snapshot error:", error);
+      setFetchError("Connection error. Please check your internet.");
+      setIsLoading(false);
+      handleFirestoreError(error, OperationType.GET, 'products');
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const resetProducts = async () => {
     if (!confirm('Are you sure you want to reset all products to defaults? This will remove any custom products you added.')) return;
     
     try {
       setIsLoading(true);
-      const response = await fetch('/api/products/reset', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to reset products');
-      const data = await response.json();
-      setProducts(data.products);
+      const q = query(collection(db, 'products'));
+      const snapshot = await getDocs(q);
+      const batch = writeBatch(db);
+      snapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      
+      await seedDefaultProducts();
       alert('Products have been reset to defaults.');
     } catch (error: any) {
+      console.error('Error resetting store:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'products');
       alert(`Error: ${error.message}`);
     } finally {
       setIsLoading(false);
@@ -240,36 +428,37 @@ export default function App() {
       return;
     }
 
+    if (!user) {
+      alert('You must be logged in to add products');
+      return;
+    }
+
     try {
-      setIsLoading(true);
-      const response = await fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newProductName,
-          price: parseFloat(newProductPrice),
-          category: newProductCategory,
-          image: newProductImage
-        })
-      });
+      setIsAddingProduct(true);
+      const newId = Date.now();
+      const productData = {
+        id: newId,
+        name: newProductName,
+        price: parseFloat(newProductPrice),
+        category: newProductCategory,
+        image: newProductImage || "https://images.unsplash.com/photo-1583394838336-acd977736f90?w=800&q=80",
+        createdAt: serverTimestamp()
+      };
       
-      if (response.ok) {
-        await fetchProducts();
-        setIsAddProductModalOpen(false);
-        setNewProductName('');
-        setNewProductPrice('');
-        setNewProductImage('');
-        setNewProductCategory('Electronics');
-        alert('Product added successfully!');
-      } else {
-        const errorData = await response.json();
-        alert(`Error: ${errorData.error || 'Failed to add product'}`);
-      }
-    } catch (error) {
-      console.error('Error adding product:', error);
-      alert('Network error while adding product. Please check your connection.');
+      await setDoc(doc(db, 'products', newId.toString()), productData);
+      
+      setIsAddProductModalOpen(false);
+      setNewProductName('');
+      setNewProductPrice('');
+      setNewProductImage('');
+      setNewProductCategory('Electronics');
+      alert('Product added successfully to Firestore!');
+    } catch (error: any) {
+      console.error('Error adding product to Firestore:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'products/' + Date.now());
+      alert(`Failed to add product: ${error.message}`);
     } finally {
-      setIsLoading(false);
+      setIsAddingProduct(false);
     }
   };
 
@@ -413,18 +602,24 @@ export default function App() {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
+      // Use signInWithPopup as it's the safest in this environment
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
       console.error("Login failed:", err);
+      
+      let message = "Login failed. Please try again or continue as guest.";
+      
       if (err.code === 'auth/popup-blocked') {
-        setLoginError("The login popup was blocked by your browser. Please allow popups for this site and try again.");
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        setLoginError("Login window was closed before completion. Please try again.");
+        message = "Popup blocked! Please allow popups for this site in your browser settings and try again.";
       } else if (err.code === 'auth/network-request-failed') {
-        setLoginError("Network error. Please check your internet connection.");
-      } else {
-        setLoginError("Login failed. Please try again or continue as guest.");
+        message = "Network error. This often happens on mobile if 'Third-party cookies' are blocked or if you are in an 'In-App' browser (like inside Facebook/Instagram). Try opening this link in Chrome or Safari.";
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        message = "Login window was closed. Please try again.";
+      } else if (err.message) {
+        message = `Login Error: ${err.message}`;
       }
+      
+      setLoginError(message);
     } finally {
       setIsLoggingIn(false);
     }
@@ -539,10 +734,31 @@ export default function App() {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-rose-600 text-sm flex items-start gap-3"
+                className="bg-rose-50 border border-rose-100 p-4 rounded-2xl text-rose-600 text-sm space-y-3"
               >
-                <AlertTriangle size={18} className="shrink-0 mt-0.5" />
-                <p>{loginError}</p>
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+                  <p>{loginError}</p>
+                </div>
+                <button 
+                  onClick={() => setShowTroubleshoot(!showTroubleshoot)}
+                  className="text-xs font-bold text-rose-700 hover:underline flex items-center gap-1"
+                >
+                  {showTroubleshoot ? 'Hide Help' : 'Troubleshoot Login'}
+                </button>
+                
+                {showTroubleshoot && (
+                  <motion.div 
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    className="text-[11px] text-rose-500 bg-white/50 p-3 rounded-xl space-y-2 border border-rose-100"
+                  >
+                    <p>• <strong>Popups:</strong> Ensure your browser isn't blocking popups.</p>
+                    <p>• <strong>Cookies:</strong> Enable "Third-party cookies" in your browser settings (required for Google Login).</p>
+                    <p>• <strong>In-App Browsers:</strong> If you're inside an app (like Instagram/Telegram), tap the menu and select "Open in Chrome/Safari".</p>
+                    <p>• <strong>Private Mode:</strong> Some browsers block login in Incognito/Private mode.</p>
+                  </motion.div>
+                )}
               </motion.div>
             )}
 
@@ -582,7 +798,8 @@ export default function App() {
           
           <div className="pt-4 border-t border-slate-100">
             <p className="text-[10px] text-slate-400 leading-relaxed">
-              <span className="font-bold text-slate-500">Mobile Tip:</span> If login fails, ensure you are using a standard browser (like Chrome or Safari) and that popups are not blocked.
+              <span className="font-bold text-slate-500">Mobile Tip:</span> If login fails, ensure you are using a standard browser (like Chrome or Safari) and that popups are not blocked. 
+              {isMobile && " On mobile, try tapping the '...' menu and selecting 'Open in Browser'."}
             </p>
           </div>
           
@@ -738,7 +955,16 @@ export default function App() {
               className="space-y-6"
             >
               <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-display font-bold text-white drop-shadow-sm">Featured Products</h2>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-display font-bold text-white drop-shadow-sm">Featured Products</h2>
+                  <button 
+                    onClick={fetchProducts}
+                    className={`p-2 rounded-lg bg-white/10 text-white/70 hover:bg-white/20 transition-all ${isLoading ? 'animate-spin' : ''}`}
+                    title="Refresh Products"
+                  >
+                    <Clock size={16} />
+                  </button>
+                </div>
                 <button 
                   onClick={() => setIsAddProductModalOpen(true)}
                   className="flex items-center gap-2 bg-white/20 backdrop-blur-md text-white border border-white/30 px-4 py-2 rounded-xl font-medium shadow-md hover:bg-white/30 transition-all active:scale-95"
@@ -1558,9 +1784,19 @@ export default function App() {
                   </div>
                   <button 
                     type="submit"
-                    className="w-full premium-gradient text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all mt-4"
+                    disabled={isAddingProduct}
+                    className={`w-full premium-gradient text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-all mt-4 flex items-center justify-center gap-2 ${isAddingProduct ? 'opacity-70 cursor-not-allowed' : ''}`}
                   >
-                    Create Product
+                    {isAddingProduct ? (
+                      <motion.div 
+                        animate={{ rotate: 360 }}
+                        transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                        className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full"
+                      />
+                    ) : (
+                      <PlusCircle size={20} />
+                    )}
+                    {isAddingProduct ? 'Creating...' : 'Create Product'}
                   </button>
                 </form>
               </div>
